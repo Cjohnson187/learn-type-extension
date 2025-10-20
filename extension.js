@@ -108,6 +108,16 @@ function updateDecorations(editor) {
         matchIndex++;
     }
 
+    // NEW LOGIC: Move cursor to the boundary between correct text and the first error/untyped character.
+    // This forces the user's focus back to the point of correction, immediately after the last correct character.
+    if (editor) {
+        const cursorPosition = document.positionAt(matchIndex);
+        // Only change selection if the cursor is not already correctly positioned
+        if (editor.selection.start.isEqual(cursorPosition) === false || editor.selection.end.isEqual(cursorPosition) === false) {
+             editor.selection = new vscode.Selection(cursorPosition, cursorPosition);
+        }
+    }
+
     const correctRanges = [];
     const errorRanges = [];
     const overlayRanges = [];
