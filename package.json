@@ -1,0 +1,53 @@
+{
+  "name": "code-typer-extension",
+  "displayName": "Code Typer Extension",
+  "description": "Extension to help learn typing code in VS Code",
+  "version": "0.0.1",
+  "publisher": "Cjohnson187",
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+        "commands": [
+            {
+                "command": "codetyper.startPractice",
+                "title": "Code Typer: Start Practice"
+            },
+            {
+                "command": "codetyper.stopPractice",
+                "title": "Code Typer: Stop Practice"
+            }
+        ]
+    },
+  "scripts": {
+
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "vscode:prepublish": "npm run compile",
+    "compile": "echo 'No compilation needed for pure JS'",
+    "lint": "echo 'No linting configured'",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cjohnson187/learn-type-extension.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Cjohnson187/learn-type-extension/issues"
+  },
+  "homepage": "https://github.com/Cjohnson187/learn-type-extension#readme",
+  "devDependencies": {
+    "@types/node": "^24.8.1",
+    "@types/vscode": "^1.105.0",
+    "typescript": "^5.9.3",
+    "vsce": "^2.15.0"
+  }
+}

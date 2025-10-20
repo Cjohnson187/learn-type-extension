@@ -1,0 +1,36 @@
+#Dependencies
+
+/node_modules
+
+#VS Code Extension Packaging
+
+#The vsce tool creates .vsix packages
+
+*.vsix
+
+#VS Code settings
+
+#Keep .vscode/settings.json, but ignore temp files and log files
+
+.vscode/*.log
+
+#Operating System Files
+
+.DS_Store
+Thumbs.db
+
+#Environment variables
+
+.env
+.env.*
+
+#Build artifacts
+
+/out
+/dist
+
+#npm files
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
