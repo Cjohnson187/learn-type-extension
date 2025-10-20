@@ -10,21 +10,24 @@
   "categories": [
     "Other"
   ],
+  "activationEvents": [
+    "onCommand:codetyper.startPractice",
+    "onCommand:codetyper.stopPractice"
+  ],
   "main": "./extension.js",
   "contributes": {
-        "commands": [
-            {
-                "command": "codetyper.startPractice",
-                "title": "Code Typer: Start Practice"
-            },
-            {
-                "command": "codetyper.stopPractice",
-                "title": "Code Typer: Stop Practice"
-            }
-        ]
+    "commands": [
+    {
+        "command": "codetyper.startPractice",
+        "title": "Code Typer: Start Practice"
     },
+    {
+        "command": "codetyper.stopPractice",
+        "title": "Code Typer: Stop Practice"
+    }
+    ]
+  },
   "scripts": {
-
     "test": "echo \"Error: no test specified\" && exit 1",
     "vscode:prepublish": "npm run compile",
     "compile": "echo 'No compilation needed for pure JS'",

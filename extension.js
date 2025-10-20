@@ -5,11 +5,80 @@ let isPracticeMode = false;
 let targetText = '';
 let targetLength = 0;
 let disposables = [];
+let decorationTimeout = null; 
+let isSettingUp = false; 
+// The SETUP_MARKER is no longer needed since we are not inserting the text anymore.
+// const SETUP_MARKER = '\u200B'; 
 
 // Decoration types for highlighting
-let correctDecorationType;
-let errorDecorationType;
-let overlayDecorationType;
+let correctDecorationType = null; 
+let errorDecorationType = null;
+let overlayDecorationType = null;
+
+/**
+ * Disposes of all resources (listeners, decorations, timeouts) without 
+ * resetting the core state variables (isPracticeMode, targetText).
+ */
+function disposeResources() {
+    // Dispose of listeners
+    disposables.forEach(d => d.dispose());
+    disposables = [];
+    console.log('LOG: Event listeners disposed.');
+    
+    // Clear the debounce timeout if it's active
+    if (decorationTimeout) {
+        clearTimeout(decorationTimeout);
+        decorationTimeout = null;
+        console.log('LOG: Debounce timer cleared.');
+    }
+
+    // Reset editor settings (optional, but good practice)
+    vscode.workspace.getConfiguration().update('editor.wordWrap', undefined, vscode.ConfigurationTarget.Workspace);
+    vscode.workspace.getConfiguration().update('editor.suggest.enabled', undefined, vscode.ConfigurationTarget.Workspace);
+    // NEW: Restore inline suggest setting
+    vscode.workspace.getConfiguration().update('editor.inlineSuggest.enabled', undefined, vscode.ConfigurationTarget.Workspace);
+    
+    // Clear decorations and dispose of decoration types
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+        // Clear decorations using the defined decoration types
+        if (correctDecorationType) editor.setDecorations(correctDecorationType, []);
+        if (errorDecorationType) editor.setDecorations(errorDecorationType, []);
+        if (overlayDecorationType) editor.setDecorations(overlayDecorationType, []);
+        console.log('LOG: Decorations cleared from editor.');
+    }
+    
+    // Dispose of decoration types globally and set them to null
+    if (correctDecorationType) correctDecorationType.dispose();
+    if (errorDecorationType) errorDecorationType.dispose();
+    if (overlayDecorationType) overlayDecorationType.dispose();
+    console.log('LOG: Decoration types disposed.');
+
+    // Reset decoration types to null
+    correctDecorationType = null;
+    errorDecorationType = null;
+    overlayDecorationType = null;
+}
+
+/**
+ * Debounced wrapper for updateDecorations to handle rapid text changes (like during setup).
+ * Ensures decorations are only applied once the editor state has settled.
+ * @param {vscode.TextEditor} editor 
+ */
+function debouncedUpdateDecorations(editor) {
+    if (decorationTimeout) {
+        clearTimeout(decorationTimeout);
+        // console.log('LOG: Debounce: Timer reset.');
+    }
+    
+    // Schedule the actual decoration update after 10ms
+    decorationTimeout = setTimeout(() => {
+        decorationTimeout = null;
+        updateDecorations(editor);
+        // console.log('LOG: Debounce: Update Executed.');
+    }, 10);
+}
+
 
 /**
  * Calculates the current match state (correct, error, and overlay ranges) 
@@ -17,14 +86,21 @@ let overlayDecorationType;
  * @param {vscode.TextEditor} editor 
  */
 function updateDecorations(editor) {
-    if (!editor || !isPracticeMode || !targetText) {
+    // CRITICAL: This guard relies on state set in startPractice
+    if (!editor || !isPracticeMode || !targetText) { 
+        console.log('LOG: updateDecorations skipped (not in practice mode or missing data).');
         return;
     }
+    
+    // console.log('LOG: Decoration update is running after debounce.');
 
     const document = editor.document;
     const currentText = document.getText();
     const currentLength = currentText.length;
 
+    // The target is still based on the original full text length
+    console.log(`LOG: Update Decorations: Current Length: ${currentLength}, Target Length: ${targetLength}`);
+    
     let matchIndex = 0;
     
     // Find the boundary of the correctly typed prefix
@@ -36,75 +112,122 @@ function updateDecorations(editor) {
     const errorRanges = [];
     const overlayRanges = [];
     
-    // 1. Determine Correct and Error Ranges in the current document (typed text)
-    if (currentLength > 0) {
-        let errorStart = -1;
+    // --- 1. Determine Correct and Error Ranges in the current document (typed text) ---
+    // Error logic must now compare typed text against target text
+    let errorStart = -1;
 
-        // Iterate through the typed portion
-        for (let i = 0; i < currentLength; i++) {
-            const charMatch = (i < targetLength) && (currentText[i] === targetText[i]);
+    for (let i = 0; i < currentLength; i++) {
+        // If we haven't reached the target length, check for match
+        const charMatch = (i < targetLength) && (currentText[i] === targetText[i]);
+        
+        // If current length exceeds target length, the rest is an error
+        const overflowError = (i >= targetLength);
 
-            if (charMatch) {
-                // If we were in an error state, close the error range
-                if (errorStart !== -1) {
-                    const errorEndPos = document.positionAt(i);
-                    const errorStartPos = document.positionAt(errorStart);
-                    errorRanges.push(new vscode.Range(errorStartPos, errorEndPos));
-                    errorStart = -1;
-                }
-                // Add correct character range
-                const startPos = document.positionAt(i);
-                const endPos = document.positionAt(i + 1);
-                correctRanges.push(new vscode.Range(startPos, endPos));
-            } else {
-                // Character mismatch or extra characters
-                if (errorStart === -1) {
-                    errorStart = i;
-                }
+        if (charMatch) {
+            if (errorStart !== -1) {
+                // End of error block
+                errorRanges.push(new vscode.Range(document.positionAt(errorStart), document.positionAt(i)));
+                errorStart = -1;
+            }
+            // Correct character
+            correctRanges.push(new vscode.Range(document.positionAt(i), document.positionAt(i + 1)));
+        } else if (overflowError || !charMatch) {
+            // Error character
+            if (errorStart === -1) {
+                errorStart = i;
             }
         }
-        
-        // Handle trailing error text (mismatch or extra characters at the end)
-        if (errorStart !== -1) {
-            const errorStartPos = document.positionAt(errorStart);
-            const errorEndPos = document.positionAt(currentLength);
-            errorRanges.push(new vscode.Range(errorStartPos, errorEndPos));
-        }
+    }
+    
+    // Finalize any remaining error block
+    if (errorStart !== -1) {
+        errorRanges.push(new vscode.Range(document.positionAt(errorStart), document.positionAt(currentLength)));
     }
 
-    // 2. Determine Overlay Range (untyped target text)
-    // The overlay starts from the index where the current document stops matching the target text (matchIndex).
+
+    // --- 2. Determine Overlay Range (untyped target text) ---
+    // The overlay range is where the ghost text (suggestion) should appear.
+    // This is applied as an "after" content property of the decoration.
     let overlayStartIndex = matchIndex;
     
     if (overlayStartIndex < targetLength) {
-        const overlayStartPos = document.positionAt(overlayStartIndex);
-        const overlayEndPos = document.positionAt(targetLength);
-        overlayRanges.push(new vscode.Range(overlayStartPos, overlayEndPos));
+        // 1. Calculate the remainder of the target text
+        const remainderText = targetText.substring(matchIndex);
+        
+        // 2. The decoration is applied at the position of the first untyped character
+        const decorationPosition = document.positionAt(matchIndex);
+        
+        // This is the cleanest way to render multiline content as a placeholder,
+        // although it's still technically a decoration, not a suggestion.
+        if (remainderText.length > 0) {
+            overlayRanges.push({
+                range: new vscode.Range(decorationPosition, decorationPosition),
+                renderOptions: {
+                    after: {
+                        contentText: remainderText,
+                        color: '#888888', // Faded gray text
+                        backgroundColor: 'transparent',
+                    }
+                }
+            });
+        }
     }
-
+    
+    console.log(`LOG: Match Index: ${matchIndex}`);
 
     // Apply the decorations to the editor
+    // Note: The correct/error decorations are applied using their defined types.
+    // The overlay is applied as a dynamic decoration list since it uses a unique `renderOptions` property per update.
     editor.setDecorations(correctDecorationType, correctRanges);
     editor.setDecorations(errorDecorationType, errorRanges);
     editor.setDecorations(overlayDecorationType, overlayRanges);
+    
+    // Check for completion
+    // Completion occurs when the entire target text has been correctly typed and the current length matches.
+    if (matchIndex === targetLength && currentLength === targetLength && !isSettingUp) { 
+        stopPractice(true);
+        vscode.window.showInformationMessage('Code Typer Extension: CONGRATULATIONS! Practice Complete!');
+    }
 }
 
 
 /**
  * Sets up the initial decorations and listeners for practice mode.
- * @param {vscode.ExtensionContext} context 
  */
 function startPractice() {
+    isSettingUp = true; // START SETUP GUARD
+    
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
+        console.error('LOG: startPractice failed: No active text editor.');
+        isSettingUp = false;
         return;
     }
 
-    isPracticeMode = true;
-    targetText = editor.document.getText();
-    targetLength = targetText.length;
+    const document = editor.document;
+    
+    // Get the file name for display (basename is just the file name, not the full path)
+    const fileName = document.fileName.substring(document.fileName.lastIndexOf('/') + 1);
 
-    // --- 1. Define Decoration Types ---
+    // Must have content to type
+    if (document.getText().trim().length === 0) {
+        vscode.window.showErrorMessage('Code Typer Extension: The current document is empty. Please open a file with code to start practice.');
+        console.error('LOG: startPractice failed: Document is empty.');
+        isSettingUp = false;
+        return;
+    }
+
+    // Capture text and set mode. These must NOT be reset by cleanup.
+    targetText = document.getText();
+    targetLength = targetText.length;
+    isPracticeMode = true; 
+    
+    console.log(`LOG: Practice Starting. File: ${fileName}, Target Length: ${targetLength}`);
+
+    // --- 1. CLEANUP (Only dispose of old resources) ---
+    disposeResources(); 
+
+    // --- 2. Define Decoration Types ---
     correctDecorationType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(0, 255, 0, 0.1)', // Light green background
         color: '#00cc00', // Bright green text
@@ -113,67 +236,124 @@ function startPractice() {
     errorDecorationType = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 0, 0, 0.3)', // Red background
         color: '#ff3333', // Red text
-        is : true // Optional: A slightly different presentation for error
     });
 
+    // The overlay decoration type itself is now minimal, as the content is set dynamically in updateDecorations
     overlayDecorationType = vscode.window.createTextEditorDecorationType({
-        color: '#55555555', // Faint gray text for the overlay
+        // The key property `after` is set in updateDecorations, not here.
+        // We keep it defined to have a type to apply the dynamic ranges to.
     });
+    console.log('LOG: Decoration types defined.');
 
-    // --- 2. Setup Listeners ---
-    // Listen for changes in the text document to update decorations
+    // --- 3. Setup Listeners ---
     const changeListener = vscode.workspace.onDidChangeTextDocument(event => {
         if (event.document === editor.document && isPracticeMode) {
-            updateDecorations(editor);
+            console.log('LOG: Text change event triggered.');
+            debouncedUpdateDecorations(editor);
         }
     });
 
-    // Listen for editor changes (e.g., changing tabs) to stop practice
+    // We keep the guard listener placeholder
+    const typingGuardListener = vscode.workspace.onDidChangeTextDocument(event => {
+        // Placeholder for future illegal edit enforcement
+    });
+
+
     const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(e => {
         if (e !== editor && isPracticeMode) {
-             // Optional: automatically stop practice if the user navigates away
-            stopPractice();
-            vscode.window.showInformationMessage('CodeType Club: Practice stopped because you changed editor tabs.');
+            stopPractice(false);
+            vscode.window.showInformationMessage('Code Typer Extension: Practice stopped because you changed editor tabs.');
+            console.log('LOG: Practice stopped due to active editor change.');
         }
     });
     
-    disposables.push(changeListener, activeEditorListener);
+    disposables.push(changeListener, typingGuardListener, activeEditorListener);
+    console.log('LOG: Event listeners registered.');
 
-    // Initial setup: move cursor to start and apply initial overlay
-    const startPos = new vscode.Position(0, 0);
-    editor.selection = new vscode.Selection(startPos, startPos);
+    // CRITICAL: Disable features that interfere with typing experience
+    vscode.workspace.getConfiguration().update('editor.wordWrap', 'off', vscode.ConfigurationTarget.Workspace);
+    vscode.workspace.getConfiguration().update('editor.suggest.enabled', false, vscode.ConfigurationTarget.Workspace);
+    // NEW: Disable inline completion suggestions
+    vscode.workspace.getConfiguration().update('editor.inlineSuggest.enabled', false, vscode.ConfigurationTarget.Workspace);
     
-    updateDecorations(editor);
+    // --- 4. EXECUTION FLOW: Clear Document, NO INSERT, Apply Decorations ---
+    
+    // Define the full range of the document content
+    const fullRange = new vscode.Range(new vscode.Position(0, 0), document.positionAt(document.getText().length));
+    
+    // Clear the document contents first
+    editor.edit(editBuilder => {
+        // **ACTION CHANGED: Now only clears the document.**
+        editBuilder.delete(fullRange);
+    }).then(success => {
+        console.log(`LOG: Document cleared successfully: ${success}`);
+        
+        // **ACTION REMOVED: No longer inserting the text.**
+        
+        // Then, move the cursor to the start
+        const startPos = new vscode.Position(0, 0);
+        editor.selection = new vscode.Selection(startPos, startPos);
+        
+        // END SETUP GUARD: Now that the text is cleared and cursor is ready.
+        isSettingUp = false; 
 
-    vscode.window.showInformationMessage('CodeType Club: Practice Started! Type the code below. Errors must be manually corrected.');
+        // Call the debounced function to apply the initial overlay (ghost text suggestion)
+        debouncedUpdateDecorations(editor);
+        console.log('LOG: debouncedUpdateDecorations called for initial overlay.');
+
+
+        // Display the success message
+        vscode.window.showInformationMessage(`Code Typer Extension: Practice Started on ${fileName}! Type the code below. Errors must be manually corrected. The full target text appears as a placeholder suggestion.`);
+    }).catch(error => {
+        console.error('LOG: ERROR during startPractice edit sequence:', error);
+        isSettingUp = false; // Ensure setup guard is reset on error
+        vscode.window.showErrorMessage('Code Typer Extension: Failed to set up typing environment.');
+    });
 }
 
 /**
  * Cleans up listeners and decorations to stop practice mode.
+ * @param {boolean} [silent=false] Whether to suppress the "Stopped" message.
  */
-function stopPractice() {
-    if (!isPracticeMode) return;
-
-    isPracticeMode = false;
-
-    // Dispose of listeners
-    disposables.forEach(d => d.dispose());
-    disposables = [];
-    
-    // Clear decorations
+function stopPractice(silent = false) {
     const editor = vscode.window.activeTextEditor;
-    if (editor) {
-        editor.setDecorations(correctDecorationType, []);
-        editor.setDecorations(errorDecorationType, []);
-        editor.setDecorations(overlayDecorationType, []);
-    }
-    
-    // Dispose of decoration types
-    correctDecorationType.dispose();
-    errorDecorationType.dispose();
-    overlayDecorationType.dispose();
+    const currentTargetText = targetText; // Capture targetText before state reset
 
-    vscode.window.showInformationMessage('CodeType Club: Practice Stopped. Happy coding!');
+    // 1. Dispose of resources (listeners, decorations, timeouts)
+    disposeResources();
+    
+    // 2. Reset global state variables
+    if (isPracticeMode) {
+        targetText = ''; 
+        targetLength = 0; 
+        isPracticeMode = false;
+        isSettingUp = false; // Reset setup guard here too, just in case
+        console.log('LOG: Global state reset and isPracticeMode set to false.');
+
+        // 3. Restore the original text (Async edit)
+        if (editor && currentTargetText.length > 0) {
+            const document = editor.document;
+            const fullRange = new vscode.Range(new vscode.Position(0, 0), document.positionAt(document.getText().length));
+            
+            // Clear current content (typed/partial text)
+            editor.edit(editBuilder => {
+                editBuilder.delete(fullRange);
+            }).then(() => {
+                // Insert original content
+                return editor.edit(editBuilder => {
+                    editBuilder.insert(new vscode.Position(0, 0), currentTargetText);
+                });
+            }).then(() => {
+                console.log('LOG: Original text restored on stop.');
+            }).catch(error => {
+                console.error('LOG: Error restoring original text:', error);
+            });
+        }
+    }
+
+    if (!silent) {
+        vscode.window.showInformationMessage('Code Typer Extension: Practice Stopped. Happy coding!');
+    }
 }
 
 /**
@@ -181,18 +361,25 @@ function stopPractice() {
  * @param {vscode.ExtensionContext} context 
  */
 function activate(context) {
-    // Register the start command
-    let disposableStart = vscode.commands.registerCommand('codetypeclub.startPractice', startPractice);
-    context.subscriptions.push(disposableStart);
-    
-    // Register the stop command
-    let disposableStop = vscode.commands.registerCommand('codetypeclub.stopPractice', stopPractice);
-    context.subscriptions.push(disposableStop);
+    try {
+        // Register the start command
+        let disposableStart = vscode.commands.registerCommand('codetyper.startPractice', startPractice);
+        context.subscriptions.push(disposableStart);
+        
+        // Register the stop command
+        let disposableStop = vscode.commands.registerCommand('codetyper.stopPractice', stopPractice);
+        context.subscriptions.push(disposableStop);
+
+        console.log('Code Typer Extension: All commands registered successfully.');
+
+    } catch (error) {
+        console.error('Code Typer Extension failed to activate:', error);
+    }
 }
 
 // this method is called when your extension is deactivated
 function deactivate() {
-    stopPractice();
+    stopPractice(true); // Clean up silently
 }
 
 module.exports = {
